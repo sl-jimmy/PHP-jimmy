@@ -1,0 +1,71 @@
+/* 分頁 */
+/**
+* $Url		   //網址
+* $Page		   //頁數
+* $Total	   //資料總筆數
+* $LimitOffset //每頁筆數
+* $PageOffset  //頁數筆數
+* $param	   //參數
+*/
+if ( ! function_exists('tv_pager'))
+{
+	function tv_pager($Url,$Page=1,$Total=1,$LimitOffset=5,$PageOffset=5,$param=array(),$mode='')
+	{
+		$Page = (is_numeric($Page) && $Page >= 1) ? $Page : 1;
+		$Url = $Url . '/';
+		$page_html = '';
+		$argu = '';
+		if(is_array($param) && !empty($param))
+		{
+			$argu .= '/' . implode('/', $param);
+		}
+		$max_page = ceil($Total/$LimitOffset);//換算總頁數
+		$up = ($Page-1 <= 0)? '1' : $Page-1 ;//上一頁
+		$do = ($Page+1 >= $max_page )? $max_page : $Page+1 ;//下一頁
+		$sfor = ($Page-floor($PageOffset/2) <= 0)? '1' : $Page-floor($PageOffset/2) ;//迴圈開始頁面
+		$efor = ($sfor+$PageOffset-1 >= $max_page )? $max_page : $sfor+$PageOffset-1 ;//迴圈結束頁面
+		if($mode == 'easy') 
+		{
+			$page_html .= '<div class="pager">';
+			$page_html .= '<ol>';
+			
+			for($i = $sfor;$i <= $efor; $i++)
+			{
+				$page_html .=($i==$Page)? '<li class="active">'.$i.'</li>' : '<li><a href="'.$Url.$i.$argu.'">'.$i.'</a></li>' ;
+			}
+			
+			$page_html .= '</ol>';
+			$page_html .= '</div>';
+			$page_html .= '<div class="clearfloat"></div>';
+		}	
+		else
+		{
+			$page_html .= '<div class="pager">';
+			$page_html .= '<ol>';
+			$page_html .= '<li><a href="'.$Url.'1'.$argu.'">最前頁</a></li>';
+			$page_html .= '<li><a href="'.$Url.$up.$argu.'">上一頁</a></li>';
+			
+			for($i = $sfor;$i <= $efor; $i++)
+			{
+				$page_html .=($i==$Page)? '<li class="active">'.$i.'</li>' : '<li><a href="'.$Url.$i.$argu.'">'.$i.'</a></li>' ;
+			}
+			
+			$page_html .= '<li><a href="'.$Url.$do.$argu.'">下一頁</a></li>';
+			$page_html .= '<li><a href="'.$Url.$max_page.$argu.'">最終頁</a></li>';
+			
+			$page_html .= '</ol>';
+			$page_html .= '</div>';
+			$page_html .= '<div class="clearfloat"></div>';
+			
+
+		}
+		if($Total <= $LimitOffset)
+		{
+			return '<div id="path-num"></div>';
+		}
+		else
+		{
+			return $page_html;
+		}
+	}
+}
