@@ -1,0 +1,17 @@
+	//產生檔案路徑方法
+	protected function ez_mkdir($path) {
+		$path_array = explode ( '/', $path );
+		$path = '/';
+		for($i = 1; $i < count ( $path_array ); $i ++) {
+			if (! empty ( $path_array [$i] )) {
+				$path = $path . $path_array [$i] . '/';
+			}
+			$t_mkDir = substr ( $path, 0, - 1 );
+			
+			if (! is_dir ( $t_mkDir )) {
+				$oldmask = umask ( 0 );
+				mkdir ( $t_mkDir, 0777 );
+				umask ( $oldmask );
+			}
+		}
+	}
