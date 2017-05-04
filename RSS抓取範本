@@ -1,0 +1,348 @@
+<?php
+if (! defined ( 'BASEPATH' ))	exit ( 'No direct script access allowed' );
+class Mirror_Media_Api extends CI_Controller {
+	private $adm_id = '';
+	private $_connDBType = 'TV_news_Master';	
+	private $_CI;
+	private $_DB = true;
+	private $_initDB = false;	
+	private $table_name = 'mirror_to_news'; // 要抓取的MySQL 資料表
+	 private $s3_config_image_save = '/var/www/html/s3_file/img/upload/'; //後台檔案上傳儲存的路徑(圖片) SERVER路徑 piwigo檔案路徑
+
+
+	// public $js_version = '20121031';
+	public function __construct() {
+		parent::__construct ();
+		$this->_CI =& get_instance();
+		$this->load->library ( 'Uuid' );
+		header ( "Content-Type:text/html; charset=utf-8" );
+	}
+	
+	public function initDB()
+	{
+		if(!$this->_initDB)
+		{
+			// load db library
+			if(!isset($this->_CI->applib_db))
+				$this->_CI->load->library('AppLib_DB');
+				
+			// connect db
+			$this->_DB = $this->_CI->applib_db->ConnBCDB($this->_connDBType);
+			// load db active library
+			
+			if(!isset($this->_CI->applib_dbactive))
+				$this->_CI->load->library('AppLib_DBActive');
+			// init db
+			$this->_initDB = $this->_CI->applib_dbactive->initDB($this->_DB);
+		}
+		return $this->_initDB;
+	}	
+
+
+	// 鏡傳媒API XML格式新增 
+	public function api_xml_mirror_media_add() {
+		if(!$this->initDB())
+		return false;		
+	  $result = array();
+		$array_id = array();
+		$news_v4_array_id = array();
+		//============比對今天是否已經有抓到資料，有的話就不要在寫入。====================================
+		$this->_DB->select ( 'guid,news_id,u_time' );
+		$query = $this->_DB->get($this->table_name );
+		$array_object_id = $query->result() ;
+		if(!empty($array_object_id)){
+			foreach($array_object_id as $k => $object){
+				$array_id[$object->guid] = $object->u_time ;
+			}
+		}
+		//============比對今天是否已經有抓到資料，有的話就不要在寫入。 simplexml_load_string SAX====================================
+		//============比對今天是否已經有抓到資料，有的話就不要在寫入。====================================
+		$this->_DB->select ( 'news_id,news_external_uid,news_title,news_mk_user,news_status' );
+		$news_v4_where['news_get_type'] = '1' ;
+		$query = $this->_DB->get_where('news_v4',$news_v4_where );
+		$array_object_id = $query->result() ;
+		if(!empty($array_object_id)){
+			foreach($array_object_id as $k => $object){
+				$news_v4_array_id[$object->news_external_uid]['news_status'] = $object->news_status ;
+				$news_v4_array_id[$object->news_external_uid]['news_id'] = $object->news_id ;
+				$news_v4_array_id[$object->news_external_uid]['title'] = $object->news_title ;
+			}
+		}
+		//============比對今天是否已經有抓到資料，有的話就不要在寫入。 simplexml_load_string SAX====================================
+		
+		$api_json = '';
+		$api_url = 'https://www.mirrormedia.mg/rss/partial.xml';
+		$xml = simplexml_load_file($api_url); 
+		
+		//===================================先將抓到的XML儲存在S3的LOG內 START ================================================
+			$log_text = curl_get_json($api_url);
+			@$json_name = '/var/www/html/s3_file/logs/mirror_media/'.date("YmdHis").".txt"; 
+			@$fp=fopen($json_name,"a+");
+			@fwrite($fp,$log_text);
+			@fclose($fp); 		
+		//===================================先將抓到的XML儲存在S3的LOG內 END ================================================			
+		$i = 0 ;
+		$restart_number = 0 ; //每五筆就重新在執行一次，直到沒有資料要抓
+		$repeat_number = 0 ;
+		$add_number = 0 ;
+		$log_status = 1 ;
+		$log_txt = date('Y-m-d H:i').'寫入sales_article_uid' ;
+		$Arr = '';
+		//先建立照片的S3路徑目錄
+		$filedir = $this->s3_config_image_save . $this->table_name . "/" . date ( 'Y' ) .'/' . date ( 'm' ).'/'. date ( 'd' ) . "/";
+		if (! is_dir ( $filedir )) {
+			$this->ez_mkdir ( $filedir );
+		}
+		//XML的Array格式
+		foreach ($xml->channel->item as $item) {
+			$dc = $item->children("http://purl.org/dc/elements/1.1/"); 
+			$add_array = '';	
+			$image = '' ;
+			$i++ ;
+			$uid = (string) $item->guid ; //抓取固定數量文字之後的ID
+			$content = $item->children('content', 'http://purl.org/rss/1.0/modules/content/');
+			$modified = date('Y-m-d H:i:s',strtotime($dc->modified));
+			$pubDate = date('Y-m-d H:i:s',strtotime($item->pubDate));
+			//如果有重複的ID，就不寫入。
+			if(!empty($array_id[$uid])){
+				//如果二邊的更新時間都一樣，就不寫入。
+				if($array_id[$uid]===$modified){
+					$repeat_number++ ;
+					continue ;					
+				}
+			}
+			$restart_number++ ;
+			//主圖URL轉為存在S3
+			switch(substr($item->image,-3)){
+				case "jpg":
+						$Filename_extension_image = '.jpg';
+				 break ;
+				case "png":
+						$Filename_extension_image = '.png';
+				 break ;
+				case "gif":
+						$Filename_extension_image = '.gif';
+				 break ;	
+				default:
+						$Filename_extension_image = '.jpg';
+			}
+			$UUID_jpg = $uid.'_'.$this->uuid->v4 () . $Filename_extension_image;
+			$UUID_jpg_compression = $uid.'_'.$this->uuid->v4 () .'_compression' . $Filename_extension_image;
+			$str = (string)$content ;
+			 $preg = '/<img.*?src=[\"|\']?(.*?)[\"|\']?\s.*?>/i'; 
+			 preg_match_all ( $preg, $str, $imgArr );
+			if(!empty($imgArr[1])){
+				 $image_datea = $imgArr[0][0];
+				 $Arr = '' ;
+				foreach($imgArr[1] as $k => $value2){
+					//如果副檔名抓不到，就直接給jpg檔案
+					switch(substr($value2,-3)){
+						case "jpg":
+								$Filename_extension_content = '.jpg';
+						break ;
+						case "png":
+								$Filename_extension_content = '.png';
+						break ;
+						case "gif":
+								$Filename_extension_content = '.gif';
+						break ;	
+						default:
+								$Filename_extension_content = '.jpg';
+					}	
+					$uid_v4 =  $this->uuid->v4 () ;
+					$article_title_image = $uid.'_'.$uid_v4 . $Filename_extension_content;
+					$article_title_image_compression = $uid.'_'. $uid_v4.'_compression' . $Filename_extension_content;
+					$www_path = '/piwigo/upload/'.$this->table_name . "/" . date ( 'Y' ) .'/' . date ( 'm' ).'/'. date ( 'd' ) . "/" .$article_title_image_compression ;					// 建立檔案目錄
+					copy ( $value2,$filedir . $article_title_image );
+					$this->ImageResize($value2,$filedir.$article_title_image_compression);	
+					$Arr[$value2] = $www_path ;
+				}
+				$content = strtr($str,$Arr) ;
+				preg_match_all ( $preg, $content, $imgArr );	
+				$image = $imgArr[1][0];				
+				$image_datea = $imgArr[0][0];
+				$content_news = str_replace($image_datea,' ',$content); //將內文的第一張圖片取代掉。
+			}
+			$add_number++;	
+			$add_array['c_user']           = 'jimmy';                                 					//暫時寫我的名稱
+			$add_array['c_time']           = date('Y-m-d H:i:s');			                					//建立日期時間
+			$add_array['guid']             = $uid ;                                   					//鏡傳媒 Uid
+			$add_array['title']            = (string) $item->title;                   					//標題
+			$add_array['description']      = (string)str_replace('\'',' ',$item->description);  //mata導言
+			$add_array['category']         = (string) $item->category;             							//鏡傳媒自已定義的分類
+			$add_array['link']             = (string) $item->link;            									//鏡傳媒來源URL
+			$add_array['article_content']  = (string)str_replace('\'',' ',$content) ;           //內容
+			$add_array['image']            = $image ;                       										//主圖圖片
+			$add_array['pubDate']		 = $pubDate ;                           										//發佈日期
+			$add_array['u_time']		 = $modified ;                          										//修改日期
+			$this->_CI->applib_dbactive->exeReplaceSet($this->table_name,$add_array);
+			
+			//新聞更新資料或寫入資料
+			$add_news_v4_array = array();
+			$add_news_v4_array['news_version'] = '4';                          											//新聞版本，固定為4
+			$add_news_v4_array['news_status'] = '0';                           											//審核狀態 預設為待審核 0 
+			$add_news_v4_array['news_get_type'] = '1';                         											//供稿來源 1 為 鏡傳媒
+			$add_news_v4_array['news_title'] = (string) $item->title;   ;      											//標題
+			$add_news_v4_array['news_img'] = $image   ;      																				//主圖圖片
+			$add_news_v4_array['news_summary'] = (string)str_replace('\'',' ',$item->description);  //mata導言
+			$add_news_v4_array['news_content'] = (string)str_replace('\'',' ',$content_news) ;      //內容
+			$add_news_v4_array['news_published_date'] = $pubDate ;                         					//發佈日期
+			$add_news_v4_array['news_make_time'] = date('Y-m-d H:i:s');			               					//建立日期時間
+			$add_news_v4_array['news_mk_user'] = 'mirror_pt';			               										//建立者	
+			$add_news_v4_array['news_external_uid'] = $uid;			                 										//鏡傳媒UID	
+			$add_news_v4_category_mapping_array['news_category_id'] = '2';			 										//分類為 生活
+			//判斷新聞沒有這筆資料
+			if(empty($news_v4_array_id[$uid])){
+				// echo $news_v4_array_id[$uid] .'<br />';
+				//=============================== 新聞網寫入 START ================================================
+				$this->_DB->insert ( "news_v4", $add_news_v4_array );
+				$news_id = $this->_DB->conn_id->insert_id ;	
+				$add_array['news_id'] = $news_id ;			
+				$this->_CI->applib_dbactive->exeReplaceSet($this->table_name,$add_array);	
+				$add_news_v4_category_mapping_array['news_id'] = $news_id ;
+				$this->_DB->insert ( "news_v4_category_mapping", $add_news_v4_category_mapping_array );
+			}elseif(!empty($news_v4_array_id[$uid])){ //判斷有該筆新聞資料
+				$add_array['news_id'] = $news_v4_array_id[$uid]['news_id'];			
+				$add_news_v4_array['news_update_time'] = date('Y-m-d H:i:s')	;
+				$add_news_v4_array['news_lastmodifyuser'] = 'crontab'	;				
+				$add_news_v4_array['news_id'] = $news_v4_array_id[$uid]['news_id'];		
+				//先針對鏡傳媒資料儲存在TABLE內
+				$this->_CI->applib_dbactive->exeReplaceSet($this->table_name,$add_array);	
+				switch($news_v4_array_id[$uid]['news_status']){
+					case "0": //審核中，就直接更新新聞主表
+							//不更新標題。
+							$add_news_v4_array_delete['news_title'] = '要刪除的key';
+							$add_news_v4_array = array_diff_key($add_news_v4_array,$add_news_v4_array_delete);
+							$this->_DB->where('news_id', $news_v4_array_id[$uid]['news_id']);
+							//除了標題外，其他都更新
+							$this->_DB->update( 'news_v4', $add_news_v4_array);	
+							$add_news_v4_category_mapping_array['news_id'] =  $news_v4_array_id[$uid]['news_id'] ;
+							//新增分類，統一給生活類 =2 因新增會重覆寫入，就不在寫入，
+							// $this->_DB->insert ( "news_v4_category_mapping", $add_news_v4_category_mapping_array );							
+						break ;
+					case "1": //已經上架，要寫入新聞二審資料表及 待審通知
+					$add_news_v4_array['news_title'] =$news_v4_array_id[$uid]['title'];
+						$this->_CI->applib_dbactive->exeReplaceSet('news_v4_version_control',$add_news_v4_array);		
+						$add_pending_array = ''; 
+						$add_pending_array['pending_type'] = '5'; //5=鏡傳媒
+						$add_pending_array['data_id'] =  $news_v4_array_id[$uid]['news_id'];
+						$add_pending_array['data_title'] =  $news_v4_array_id[$uid]['title'];
+						// $add_pending_array['data_title'] = (string) $item->title;
+						$add_pending_array['data_img'] = $image;
+						$add_pending_array['data_date_time'] =  date('Y-m-d H:i:s');
+						//更新待審通知
+						$this->_CI->applib_dbactive->exeReplaceSet('pending',$add_pending_array);	
+						break ;						
+				}
+			}
+			//=============================== 新聞網寫入 END ================================================					
+		}	
+			$result['date'] = '日期：'.date('Y-m-d');
+			$result['add'] = '寫入'.$add_number.'筆';
+			$result['repeat'] = '已存在TABLE，不寫入資料'.$repeat_number.'筆';
+			echo json_encode($result);
+	}
+	
+
+	
+	//產生檔案路徑方法
+	protected function ez_mkdir($path) {
+		$path_array = explode ( '/', $path );
+		$path = '/';
+		for($i = 1; $i < count ( $path_array ); $i ++) {
+			if (! empty ( $path_array [$i] )) {
+				$path = $path . $path_array [$i] . '/';
+			}
+			$t_mkDir = substr ( $path, 0, - 1 );
+			
+			if (! is_dir ( $t_mkDir )) {
+				$oldmask = umask ( 0 );
+				mkdir ( $t_mkDir, 0777 );
+				umask ( $oldmask );
+			}
+		}
+	}
+
+		/**
+		* 抓取要縮圖的比例, 下述只處理 jpeg
+		* $from_filename : 來源路徑, 檔名, ex: /tmp/xxx.jpg
+		* $save_filename : 縮圖完要存的路徑, 檔名, ex: /tmp/ooo.jpg
+		* $in_width : 縮圖預定寬度
+		* $in_height: 縮圖預定高度
+		* $quality : 縮圖品質(1~100)
+		*
+		* Usage:
+		* ImageResize('ram/xxx.jpg', 'ram/ooo.jpg');
+		*/
+	 protected function ImageResize($from_filename, $save_filename, $in_width=870, $in_height=870, $quality=80)
+	{
+		
+		$allow_format = array('jpeg', 'png', 'gif');
+		$sub_name = '';
+		
+		// Get new dimensions
+		$img_info = getimagesize($from_filename);
+		$width = $img_info[0];
+		$height = $img_info[1];
+		$bits = $img_info['bits'];
+		$mime = $img_info['mime'];
+		$sub_name = explode('/',$mime);
+		// 取得縮在此範圍內的比例
+		$percent = $this->getResizePercent($width, $height, $in_width, $in_height);
+		$new_width = $width * $percent;
+		$new_height = $height * $percent;
+		
+		// Resample
+		$image_new = imagecreatetruecolor($new_width, $new_height);
+		
+		// $function_name: set function name
+		// => imagecreatefromjpeg, imagecreatefrompng, imagecreatefromgif
+		/*
+		// $sub_name = jpeg, png, gif
+		$function_name = 'imagecreatefrom'.$sub_name;
+		$image = $function_name($filename); //$image = imagecreatefromjpeg($filename);
+		*/
+		//針對各副檔名做處理
+		switch($sub_name['1']){
+			case "png":
+			case "gif":
+				// 透明背景的處理機制
+				// imagealphablending($image_new, false);
+				imagesavealpha($image_new, true);
+				$color = imagecolorallocatealpha($image_new, 0, 0, 0, 127);
+				imagefill($image_new, 0, 0, $color);
+				$image = imagecreatefrompng($from_filename);	
+				break;		
+			default:
+			$image = imagecreatefromjpeg($from_filename);			
+		}		
+		// pre2($image) ;
+			imagecopyresampled($image_new, $image, 0, 0, 0, 0, $new_width, $new_height, $width, $height);
+			@imagejpeg($image_new, $save_filename, $quality);
+		}
+		
+		/**
+		* 抓取要縮圖的比例
+		* $source_w : 來源圖片寬度
+		* $source_h : 來源圖片高度
+		* $inside_w : 縮圖預定寬度
+		* $inside_h : 縮圖預定高度
+		*
+		* Test:
+		* $v = (getResizePercent(1024, 768, 400, 300));
+		* echo 1024 * $v . “\n";
+		* echo 768 * $v . “\n";
+		*/
+		protected function getResizePercent($source_w, $source_h, $inside_w, $inside_h)
+		{
+			if ($source_w < $inside_w && $source_h < $inside_h) {
+				return 1; // Percent = 1, 如果都比預計縮圖的小就不用縮
+			}
+			
+			$w_percent = $inside_w / $source_w;
+			$h_percent = $inside_h / $source_h;
+			
+			return ($w_percent > $h_percent) ? $h_percent : $w_percent;
+		}
+	
+}
