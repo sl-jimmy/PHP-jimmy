@@ -46,7 +46,7 @@ class Mirror_Media_Api extends CI_Controller {
 	  $result = array();
 		$array_id = array();
 		$news_v4_array_id = array();
-		//============比對今天是否已經有抓到資料，有的話就不要在寫入。====================================
+		//============鏡傳媒比對今天是否已經有抓到資料，有的話就不要在寫入。 START====================================
 		$this->_DB->select ( 'guid,news_id,u_time' );
 		$query = $this->_DB->get($this->table_name );
 		$array_object_id = $query->result() ;
@@ -55,8 +55,9 @@ class Mirror_Media_Api extends CI_Controller {
 				$array_id[$object->guid] = $object->u_time ;
 			}
 		}
-		//============比對今天是否已經有抓到資料，有的話就不要在寫入。 simplexml_load_string SAX====================================
-		//============比對今天是否已經有抓到資料，有的話就不要在寫入。====================================
+		//============鏡傳媒比對今天是否已經有抓到資料，有的話就不要在寫入。 END ====================================
+		
+		//============新聞TABLE比對今天是否已經有抓到資料，有的話就不要在寫入。 START====================================
 		$this->_DB->select ( 'news_id,news_external_uid,news_title,news_mk_user,news_status' );
 		$news_v4_where['news_get_type'] = '1' ;
 		$query = $this->_DB->get_where('news_v4',$news_v4_where );
@@ -68,7 +69,7 @@ class Mirror_Media_Api extends CI_Controller {
 				$news_v4_array_id[$object->news_external_uid]['title'] = $object->news_title ;
 			}
 		}
-		//============比對今天是否已經有抓到資料，有的話就不要在寫入。 simplexml_load_string SAX====================================
+		//============新聞TABLE比對今天是否已經有抓到資料，有的話就不要在寫入。 END ====================================
 		
 		$api_json = '';
 		$api_url = 'https://www.mirrormedia.mg/rss/partial.xml';
